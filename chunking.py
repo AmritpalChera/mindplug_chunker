@@ -48,7 +48,7 @@ def run_manual_chunk(cluster_txt):
         sent = sents_div[i].text.strip()
         all_sentences.append(sent)
         sent = sent.split()
-        if len(sent) < 4:
+        if len(sent) < 9:
             print('short sentence: ', sent)
             short_sentence.append(i)
 
