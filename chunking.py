@@ -1,7 +1,7 @@
 import numpy as np
 import spacy
 
-upper_limit=1024
+upper_limit=1028
 lower_limit=20
 
 
@@ -143,46 +143,6 @@ def run_manual_chunk(cluster_txt):
     return combineSentences(sub_divided_sents)
 
 
-
-def combineChunks(chunksArr):
-     # merge all indicies with a single element with the next
-    # print("len chunks array pre: ", len(chunksArr))
-
-    to_delete = []
-    totalSentences = len(chunksArr)
-    for i in range(1, totalSentences):
-        prev_division = chunksArr[i-1]
-        curr_division = chunksArr[i]
-        prev_division_len = len(prev_division)
-
-        # print("previous division len: ", prev_division_len)
-        if (prev_division_len < 128):
-            # print('add previoud chunk: ', prev_division, 'to ', curr_division[0: 70])
-            chunksArr[i] = prev_division + curr_division
-            to_delete.append(i-1)
-
-
-    # now check if the last index is too short. Combine it with previous
-    if len(chunksArr[-1]) < 128 and totalSentences > 1:
-        chunksArr[-2] = chunksArr[-2] + chunksArr[-1]
-        to_delete.append(-1)
-
-    # print("len chunks array: ", len(chunksArr))
-
-    # for chunk in chunksArr:
-    #     print(chunk)
-    #     print("\n\n")
-
-    # print ('to deltee: ', to_delete)
-
-    # delete all merged indicies
-    for i in range(len(to_delete)-1, -1, -1): 
-        del chunksArr[to_delete[i]]
-
-    # print("len chunks array after del: ", len(chunksArr))
-
-    return chunksArr
-
 # break it down into as many pieces
 def lower_chunk_text(text, threshold):
     sents_div, vecs_div = process(text)
@@ -192,54 +152,90 @@ def lower_chunk_text(text, threshold):
     for subcluster in reclusters:
         div_txt = clean_text(' '.join([sents_div[i].text for i in subcluster]))
         div_len = len(div_txt)
+
+        if threshold > 0.8:
+            final_texts.append(div_txt)
         
-        if div_len > upper_limit:
+        elif div_len > upper_limit:
             return lower_chunk_text(text, threshold=threshold+0.1)
         else: final_texts.append(div_txt)
 
-    return final_texts
+    return final_texts, threshold
 
-
-
-def empty_buffer(final_chunks, buffer):
-    if (len(buffer)> 0):
-        final_chunks.append(buffer)
-        buffer=""
-    return final_chunks, buffer
-
-def empty_buffer_if_needed(final_chunks, buffer, last_chunk):
-    if (len(buffer)> 0):
-        final_chunks.append(buffer)
-        buffer=last_chunk
-    return final_chunks, buffer
-
-
-def empty_buffer_if_needed_1(final_chunks, buffer, final_texts, last_chunk):
-    if (len(final_texts) > 1):
-        # print("EMPTYING BUFFER: ", buffer, "\n\n")
-
-        final_chunks.append(buffer)
-        buffer=last_chunk
-    else:
-        buffer = final_texts[0]
-    return final_chunks, buffer
-
-# the initial method is to lower the overall length of a chunk. Some chunks may become too small. So reshuffle.
-def recluster_small_chunks(chunks):
-    final_chunks=[]
-    buffer = chunks[0] # a combined string of chunks
-    for i in range(1, len(chunks)):
-        combined = buffer+chunks[i]
-        if (len(combined) < upper_limit):
-            final_texts = lower_chunk_text(combined, 0.4)
-            final_chunks, buffer = empty_buffer_if_needed_1(final_chunks, buffer, final_texts, chunks[i])
-        else:
-            final_chunks, buffer = empty_buffer(final_chunks, buffer)
-            buffer=chunks[i]
+def increase_chunk_text(text, threshold):
+    sents_div, vecs_div = process(text)
+    reclusters = cluster_text(sents_div, vecs_div, threshold)
+    final_texts = []
+    min = 128
             
-    final_chunks, buffer = empty_buffer(final_chunks, buffer)
+    if len(text) < min:
+        final_texts = [text]
+        return final_texts, threshold
+    
+    for subcluster in reclusters:
+        div_txt = clean_text(' '.join([sents_div[i].text for i in subcluster]))
+        div_len = len(div_txt)
 
+        if div_len < min:
+            return increase_chunk_text(text, threshold=threshold-0.1)
+        else: final_texts.append(div_txt)
+
+    return final_texts, threshold
+
+
+
+
+
+
+# combine chunks with less context with other chunks: will override token limit for quality
+def recluster_small_chunks(chunks):
+   # identify all small chunks; all small chunks will be combined; overriding the max limit
+    small_chunks = []
+    total_chunks = len(chunks)
+    prev_short_i = 0
+    new_chunks_m = [chunks[0]]
+    for i in range(1, total_chunks):
+
+        if prev_short_i + 1 == i:
+             new_chunks_m[-1] += ' ' + chunks[i]
+
+        elif len(chunks[i]) < 256:
+            prev_short_i = i
+            # should we combine with previous or make a new index (decide dynamically)
+            # now do get last sentence of previous, first of curr. last of curr and first of next
+            prev_lasti_sent, vecs_lasti_sent  = process(chunks[i-1])
+            curr_sent, vecs_curr = process(chunks[i])
+            next_sents, vecs_next = None, None
+            if i < total_chunks - 1:
+                next_sents, vecs_next = process(chunks[i+1])
+            
+            prev_rel = np.dot(vecs_lasti_sent[-1], vecs_curr[0])
+            next_rel = 0
+            if vecs_next is not None:
+                next_rel = np.dot(vecs_curr[-1], vecs_next[0])
+
+            if (next_rel > prev_rel):
+                new_chunks_m.append(chunks[i])
+            else:
+                new_chunks_m[-1] += ' ' + chunks[i]
+
+        else: new_chunks_m.append(chunks[i])
+
+    final_chunks = []
+    
+    for i in range(0, len(new_chunks_m)):
+        final_text, threshold = increase_chunk_text(new_chunks_m[i], 0.9)
+        final_chunks += final_text
+
+ 
     return final_chunks
+
+
+        
+
+        
+
+    
 
 def chunk_text(text):
     # Initialize the clusters lengths list and final texts list
@@ -247,26 +243,18 @@ def chunk_text(text):
     final_texts = []
 
     # Process the chunk
-    threshold = 0.9
+    threshold = 0.3
 
-    combined  = run_manual_chunk(text)
+    # combined  = run_manual_chunk(text)
     texts = []
     # now for each combined chunk, run semantic chunking.
     final_chunks = []
-    # final_texts = lower_chunk_text(text, threshold)
-    # final_chunks += final_texts
+    final_texts, threshold = lower_chunk_text(text, threshold)
+    final_chunks += final_texts
 
-    print("combined len: ", len(combined))
+    final_chunks = recluster_small_chunks(final_chunks)
+
    
-    for i in range (0, len(combined)):
-        final_texts = lower_chunk_text(combined[i], threshold)
-        final_chunks += combineChunks(final_texts)
-        # final_chunks += final_texts
-    
-    
-    
-    # print('CLUSTERS:\n\n')
-    # print(reclusters)
     print('\n\n')
 
     # new_chunks = recluster_small_chunks(final_texts)
